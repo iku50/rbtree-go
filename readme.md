@@ -31,7 +31,7 @@ func main() {
     tree.Insert(3, "three")
 
     // Search for an element
-    value, found := tree.Get(2)
+    value := tree.Get(2)
     if found {
         fmt.Println("Found:", value)
     } else {
