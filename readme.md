@@ -8,6 +8,7 @@ This repository provides an implementation of a generic Red-Black Tree in Go. A 
 - Clean Code: The codebase follows best practices for readability and maintainability, ensuring that it is easy to understand and modify.
 - Close to Original Algorithm: The implementation stays true to the original Red-Black Tree algorithm as described in academic literature, ensuring correctness and reliability.
 - Comprehensive Testing: The project includes thorough testing for all operations, with test coverage exceeding 91%, providing confidence in the implementation's correctness and robustness.
+- Lock-Free and CAS for Concurrent Operations: The tree now includes lock-free and compare-and-swap (CAS) mechanisms to support concurrent insertions, deletions, and searches, enhancing performance in multi-threaded environments.
 
 ## Usage
 
@@ -56,4 +57,35 @@ This project is licensed under the MIT License. See the LICENSE file for more de
 
 ## Acknowledgments
 
-This implementation is inspired by traditional Red-Black Tree algorithms and adapted for Go's type system.
+This implementation is inspired by traditional Red-Black Tree algorithms and adapted for Go's type system. The concurrent operations are inspired by modern lock-free programming techniques to enhance performance and scalability.
+
+## References
+
+[1] Ma J. Lock-Free Insertions on Red-Black Trees[J]. Master’s thesis. The University of Manitoba, Canada October, 2003
+[2] Kim J. H., Cameron H., Graham P. Lock-free red-black trees using cas[J]. Concurrency and Computation: Practice and experience, 2006: 1-40.
+
+## Performance
+
+```shell
+goos: darwin
+goarch: arm64
+pkg: github.com/iku50/rbtree-go
+=== RUN   BenchmarkInsert
+BenchmarkInsert
+BenchmarkInsert-8        1214280              1054 ns/op             148 B/op          5 allocs/op
+=== RUN   BenchmarkGet
+BenchmarkGet
+BenchmarkGet-8           1224667               889.0 ns/op             0 B/op          0 allocs/op
+=== RUN   BenchmarkDelete
+BenchmarkDelete
+BenchmarkDelete-8        1329610               964.7 ns/op            31 B/op          2 allocs/op
+=== RUN   BenchmarkInsertParallel
+BenchmarkInsertParallel
+BenchmarkInsertParallel-8        2257762               565.7 ns/op           148 B/op          5 allocs/op
+=== RUN   BenchmarkGetParallel
+BenchmarkGetParallel
+BenchmarkGetParallel-8           4433664               315.2 ns/op             0 B/op          0 allocs/op
+=== RUN   BenchmarkDeleteParallel
+BenchmarkDeleteParallel
+BenchmarkDeleteParallel-8        3298515               415.6 ns/op             0 B/op          0 allocs/op
+```

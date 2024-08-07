@@ -3,7 +3,9 @@ package rbtree_test
 import (
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -93,6 +95,116 @@ func TestDeleteCase3(t *testing.T) {
 	t.Log(tree.String())
 }
 
+func TestParaGetInsert(t *testing.T) {
+	tree := rbtree.NewRBTree(0, "root")
+	inserted := sync.Map{}
+	numOperations := 10000
+	for i := 0; i < numOperations; i++ {
+		key := rand.Int()
+		value := fmt.Sprintf("%d", key)
+		inserted.Store(key,value)
+	}
+
+	ch := make(chan int)
+	go func ()  {
+		inserted.Range(func(key, value any) bool {
+			k, _ := key.(int)
+			ch <- int(k)
+			return true
+		})
+		close(ch)
+	}()
+	okch := make(chan int)
+	wg := sync.WaitGroup{}
+	for i := 0;i < 10;i++{
+		wg.Add(1)
+		go func ()  {
+			defer wg.Done()
+			for v := range ch {
+				p,_ := inserted.Load(v)
+				a, _ := p.(string)
+				tree.Insert(v, string(a))
+				okch <- v
+			}
+		}()
+	}
+
+	for i :=0; i<100;i++{
+		go func () {
+			for k := range okch {
+				v := tree.Get(k)
+				if v == nil {
+					t.Log("bad value")
+					break
+				}else{
+					t.Log(*v)
+				}
+			}
+		}()
+	}
+	t.Log(tree.String())
+	wg.Wait()
+	time.Sleep(1*time.Second)
+	close(okch)
+	t.Log(tree.String())
+}
+
+
+func TestParaInsertDel(t *testing.T) {
+	tree := rbtree.NewRBTree(0, "root")
+	inserted := sync.Map{}
+	numOperations := 10000
+	for i := 0; i < numOperations; i++ {
+		key := rand.Int()
+		value := fmt.Sprintf("%d", key)
+		inserted.Store(key,value)
+	}
+
+	ch := make(chan int)
+	go func ()  {
+		inserted.Range(func(key, value any) bool {
+			k, _ := key.(int)
+			ch <- int(k)
+			return true
+		})
+		close(ch)
+	}()
+	okch := make(chan int)
+	wg := sync.WaitGroup{}
+	for i := 0;i < 10;i++{
+		wg.Add(1)
+		go func ()  {
+			defer wg.Done()
+			for v := range ch {
+				p,_ := inserted.Load(v)
+				a, _ := p.(string)
+				tree.Insert(v, string(a))
+				okch <- v
+			}
+		}()
+	}
+
+	for i :=0; i<100;i++{
+		go func () {
+			for k := range okch {
+				v := tree.Delete(k)
+				if v == nil {
+					t.Log("bad value")
+					break
+				}else{
+					t.Log(*v)
+				}
+			}
+		}()
+	}
+	t.Log(tree.String())
+	wg.Wait()
+	time.Sleep(1*time.Second)
+	close(okch)
+	t.Log(tree.String())
+}
+
+
 func TestRandomIDG(t *testing.T) {
 	tree := rbtree.NewRBTree(0, "root")
 	inserted := make(map[int]string)
@@ -103,7 +215,7 @@ func TestRandomIDG(t *testing.T) {
 		inserted[key] = value
 		tree.Insert(key, value)
 		err := tree.Check()
-		t.Log(tree.String())
+		// t.Log(tree.String())
 		if !assert.Nil(t, err, "Check Failed") {
 			t.Log(tree.String())
 			t.FailNow()
@@ -176,4 +288,49 @@ func BenchmarkDelete(b *testing.B) {
 	for k := range m {
 		tree.Delete(k)
 	}
+}
+
+func BenchmarkInsertParallel(b *testing.B) {
+    tree := rbtree.NewRBTree(rand.Int(), rand.Int())
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            tree.Insert(rand.Int(), rand.Int())
+        }
+    })
+}
+
+func BenchmarkGetParallel(b *testing.B) {
+    tree := rbtree.NewRBTree(rand.Int(), rand.Int())
+    for i := 0; i < b.N; i++ {
+        tree.Insert(rand.Int(), rand.Int())
+    }
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            tree.Get(rand.Int())
+        }
+    })
+}
+
+
+func BenchmarkDeleteParallel(b *testing.B) {
+    tree := rbtree.NewRBTree(rand.Int(), rand.Int())
+    m := make(map[int]int)
+    for i := 0; i < b.N; i++ {
+        k, v := rand.Int(), rand.Int()
+        tree.Insert(k, v)
+        m[k] = v
+    }
+    keys := make([]int, 0, len(m))
+    for k := range m {
+        keys = append(keys, k)
+    }
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            k := keys[rand.IntN(len(keys))]
+            tree.Delete(k)
+        }
+    })
 }
