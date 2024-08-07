@@ -32,7 +32,7 @@ func main() {
 
     // Search for an element
     value := tree.Get(2)
-    if found {
+    if value != nil {
         fmt.Println("Found:", value)
     } else {
         fmt.Println("Not found")
