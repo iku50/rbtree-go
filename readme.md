@@ -62,6 +62,7 @@ This implementation is inspired by traditional Red-Black Tree algorithms and ada
 ## References
 
 [1] Ma J. Lock-Free Insertions on Red-Black Trees[J]. Master’s thesis. The University of Manitoba, Canada October, 2003
+
 [2] Kim J. H., Cameron H., Graham P. Lock-free red-black trees using cas[J]. Concurrency and Computation: Practice and experience, 2006: 1-40.
 
 ## Performance
