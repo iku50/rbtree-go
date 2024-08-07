@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/iku50/rbtree"
+	"github.com/iku50/rbtree-go"
 )
 
 func TestInsertCase1(t *testing.T) {

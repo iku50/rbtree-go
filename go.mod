@@ -1,4 +1,4 @@
-module github.com/iku50/rbtree
+module github.com/iku50/rbtree-go
 
 go 1.22.5
 
