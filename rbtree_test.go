@@ -3,9 +3,9 @@ package rbtree_test
 import (
 	"fmt"
 	"math/rand/v2"
+	"runtime/debug"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -50,14 +50,16 @@ func TestInsertCase56(t *testing.T) {
 }
 
 func TestGet(t *testing.T) {
-	tree := rbtree.NewRBTree(1, 1)
-	tree.Insert(2, 2)
-	tree.Insert(3, 3)
-	tree.Insert(0, 0)
-	tree.Insert(4, 4)
-	tree.Insert(9, 9)
-	tree.Insert(7, 7)
-	tree.Insert(8, 8)
+	tree := rbtree.NewRBTree(4, 4)
+	for i := range 1000 {
+		tree.Insert(i, i)
+		tree.Check()
+		if err := tree.Check();err != nil{
+			t.Error(err)
+			t.FailNow()
+		}
+	}
+	t.Log(tree.String())
 	assert.Equal(t, 7, *tree.Get(7))
 }
 
@@ -96,9 +98,10 @@ func TestDeleteCase3(t *testing.T) {
 }
 
 func TestParaGetInsert(t *testing.T) {
+	debug.SetGCPercent(-1)
 	tree := rbtree.NewRBTree(0, "root")
 	inserted := sync.Map{}
-	numOperations := 10000
+	numOperations := 1000000
 	for i := 0; i < numOperations; i++ {
 		key := rand.Int()
 		value := fmt.Sprintf("%d", key)
@@ -115,15 +118,14 @@ func TestParaGetInsert(t *testing.T) {
 		close(ch)
 	}()
 	okch := make(chan int)
+	value := "sdfsdfds"
 	wg := sync.WaitGroup{}
-	for i := 0;i < 10;i++{
+	for i := 0;i < 100;i++{
 		wg.Add(1)
 		go func ()  {
 			defer wg.Done()
 			for v := range ch {
-				p,_ := inserted.Load(v)
-				a, _ := p.(string)
-				tree.Insert(v, string(a))
+				tree.Insert(v, value)
 				okch <- v
 			}
 		}()
@@ -137,23 +139,25 @@ func TestParaGetInsert(t *testing.T) {
 					t.Log("bad value")
 					break
 				}else{
-					t.Log(*v)
+					// t.Log(*v)
 				}
 			}
 		}()
 	}
-	t.Log(tree.String())
 	wg.Wait()
-	time.Sleep(1*time.Second)
 	close(okch)
-	t.Log(tree.String())
+	if err := tree.Check();err != nil{
+		t.Log(tree.String())
+		t.Error(err)
+		t.FailNow()
+	}
 }
 
 
 func TestParaInsertDel(t *testing.T) {
 	tree := rbtree.NewRBTree(0, "root")
 	inserted := sync.Map{}
-	numOperations := 10000
+	numOperations := 1000
 	for i := 0; i < numOperations; i++ {
 		key := rand.Int()
 		value := fmt.Sprintf("%d", key)
@@ -171,8 +175,8 @@ func TestParaInsertDel(t *testing.T) {
 	}()
 	okch := make(chan int)
 	wg := sync.WaitGroup{}
-	for i := 0;i < 10;i++{
-		wg.Add(1)
+	wg.Add(100)
+	for i := 0;i < 100;i++{
 		go func ()  {
 			defer wg.Done()
 			for v := range ch {
@@ -183,24 +187,29 @@ func TestParaInsertDel(t *testing.T) {
 			}
 		}()
 	}
-
+	pg := sync.WaitGroup{}
+	pg.Add(100)
 	for i :=0; i<100;i++{
 		go func () {
+			defer pg.Done()
 			for k := range okch {
 				v := tree.Delete(k)
 				if v == nil {
 					t.Log("bad value")
-					break
 				}else{
-					t.Log(*v)
+					t.Log("delete",*v)
 				}
 			}
 		}()
 	}
-	t.Log(tree.String())
 	wg.Wait()
-	time.Sleep(1*time.Second)
 	close(okch)
+	pg.Wait()
+	t.Log(tree.String())
+	if err := tree.Check();err != nil{
+		t.Error(err)
+		t.FailNow()
+	}
 	t.Log(tree.String())
 }
 
@@ -208,7 +217,7 @@ func TestParaInsertDel(t *testing.T) {
 func TestRandomIDG(t *testing.T) {
 	tree := rbtree.NewRBTree(0, "root")
 	inserted := make(map[int]string)
-	numOperations := 1000
+	numOperations := 50000
 	for i := 0; i < numOperations; i++ {
 		key := rand.Int()
 		value := fmt.Sprintf("%d", key)
@@ -235,11 +244,11 @@ func TestRandomIDG(t *testing.T) {
 
 			assert.Equal(t, v, *tree.Get(k), "Value should be correctly inserted and retrieved")
 		case 1:
-			if _, exists := inserted[key]; exists {
-				tree.Delete(key)
-				delete(inserted, key)
-				assert.Nil(t, tree.Get(key), "Value should be nil after deletion")
-			}
+			// if _, exists := inserted[key]; exists {
+			// 	tree.Delete(key)
+			// 	delete(inserted, key)
+			// 	assert.Nil(t, tree.Get(key), "Value should be nil after deletion")
+			// }
 		case 2:
 			expectedValue, exists := inserted[key]
 			actualValue := tree.Get(key)

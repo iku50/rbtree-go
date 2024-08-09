@@ -7,7 +7,9 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -28,30 +30,28 @@ type direction int
 
 const (
 	root direction = 0
-	left direction = iota + 3
+	left direction = iota + 2
 	right
 )
 
 type RBTreeNode[K cmp.Ordered, V any] struct {
-	c      color
+	c color
 
 	left   *RBTreeNode[K, V]
 	right  *RBTreeNode[K, V]
 	parent *RBTreeNode[K, V]
 
-	key    K
-	value  V
+	key   K
+	value V
 
-	flag   atomic.Bool   // lock
+	flag   atomic.Bool  // lock
 	hpflag atomic.Int32 // readers
-	marker atomic.Bool   // mark above node to avoid areas getting too close
-	l      localArea[K,V]     // a list to impl area lock
+	marker atomic.Bool  // mark above node to avoid areas getting too close
+	// l      localArea[K,V]     // a list to impl area lock
+	// markers localArea[K,V] // markers this node holds
 }
 
-type localArea[K cmp.Ordered, V any] struct {
-	Next *localArea[K,V]
-	Val  *RBTreeNode[K,V]
-}
+type LocalArea[K cmp.Ordered, V any] []*RBTreeNode[K, V]
 
 func (n *RBTreeNode[K, V]) dir() direction {
 	if n.parent == nil {
@@ -191,35 +191,50 @@ func (n *RBTreeNode[K, V]) cleanMarker(left bool) {
 	return
 }
 
-func (n *RBTreeNode[K, V]) getMarker() bool {
-	d := n.parent
-	for i := 0;i < 4&&d!=nil;i++{
-		if d.islock(){
-			return false
-		}
-		if !d.marker.CompareAndSwap(false,true){
-			return false
-		}
-		d=d.parent
+func (n *RBTreeNode[K, V]) getMarker(m *LocalArea[K, V], isUp bool){
+	if n.parent == nil {
+		return
 	}
-	return true
-}
-
-func (n *RBTreeNode[K, V]) unlockMarker()  {
-	d := n.parent
-	for i := 0;i < 4&&d!=nil;i++{
-		if d.islock(){
+	if isUp {
+		if len(*m) == 0 ||  (*m)[len(*m)-1].parent == nil {
 			return
 		}
-		d.marker.Swap(false)
-		d=d.parent
+		for !(*m)[len(*m)-1].parent.flag.CompareAndSwap(false, true){
+			time.Sleep(time.Nanosecond * 100)
+		}
+		for !(*m)[len(*m)-1].parent.marker.CompareAndSwap(false, true) {
+			time.Sleep(time.Nanosecond * 100)
+		}
+		(*m)[len(*m)-1].parent.flag.CompareAndSwap(true,false)
+		(*m) = append((*m), (*m)[len(*m)-1].parent)
+		return
 	}
+	d := n.parent.parent
+	for i := 0; i < 4 && d != nil; i++ {
+		for !d.flag.CompareAndSwap(false, true){
+			time.Sleep(time.Nanosecond * 100)
+		}
+		for !d.marker.CompareAndSwap(false, true) {
+			time.Sleep(time.Nanosecond * 100)
+		}
+		d.flag.CompareAndSwap(true,false)
+		(*m) = append((*m), d)
+		d = d.parent
+	}
+}
+
+func (n *RBTreeNode[K, V]) unlockMarker(m *LocalArea[K, V]) {
+	for i := range *m {
+		(*m)[i].marker.CompareAndSwap(true,false)
+	}
+	(*m) = (*m)[:0]
 	return
 }
 
 type RBTree[K cmp.Ordered, V any] struct {
 	root  *RBTreeNode[K, V]
 	count int
+	mu *sync.Mutex
 }
 
 func NewRBTree[K cmp.Ordered, V any](key K, value V) *RBTree[K, V] {
@@ -230,14 +245,11 @@ func NewRBTree[K cmp.Ordered, V any](key K, value V) *RBTree[K, V] {
 			key:   key,
 			value: value,
 		},
+		mu: &sync.Mutex{},
 	}
 }
 
-func (t *RBTree[K, V]) maintainAfterInsert(n *RBTreeNode[K, V]) bool {
-	if !n.lockInsert(){
-		return false
-	}
-	defer n.unlockArea()
+func (t *RBTree[K, V]) maintainAfterInsert(n *RBTreeNode[K, V], l *LocalArea[K, V]) bool {
 	if n.isBlack() || n.parent == nil || n.parent.c == black {
 		return true
 	}
@@ -246,47 +258,50 @@ func (t *RBTree[K, V]) maintainAfterInsert(n *RBTreeNode[K, V]) bool {
 		return true
 	}
 	if n.uncle().isRed() {
+		// get lock above all
+		if !n.parent.parent.lockInsert(l) {
+			return false
+		}
 		n.parent.c = black
 		n.parent.parent.c = red
 		n.uncle().c = black
-		n.unlockArea()
-		return t.maintainAfterInsert(n.parent.parent)
+		p := t.maintainAfterInsert(n.parent.parent, l)
+		if !p {
+			n.parent.c = red
+			n.parent.parent.c = black
+			n.uncle().c = red
+		}
+		return p
 	}
+
 	if n.dir() != n.parent.dir() {
-		p := n.parent
 		if n.dir() == left {
 			t.rotateRight(n.parent)
+			t.rotateLeft(n.parent)
+			n.left.c = red
 		} else {
 			t.rotateLeft(n.parent)
+			t.rotateRight(n.parent)
+			n.right.c = red
 		}
-		n = p
-	}
-	if n.dir() == n.parent.dir() {
+		n.c = black
+		return true
+	} else {
 		if n.dir() == left {
 			t.rotateRight(n.parent.parent)
 		} else {
 			t.rotateLeft(n.parent.parent)
 		}
 		n.parent.c = black
-		if n.sibling() != nil {
-			n.sibling().c = red
-		}
+		n.sibling().c = red
 	}
 	return true
 }
 
-func (t *RBTree[K, V]) maintainAfterDelete(n *RBTreeNode[K, V]) bool {
+func (t *RBTree[K, V]) maintainAfterDelete(n *RBTreeNode[K, V], l, m *LocalArea[K, V]) bool {
 	if n.parent == nil {
 		return true
 	}
-	if !n.lockDelete(){
-		return false
-	}
-	defer n.unlockArea()
-	if !n.getMarker(){
-		return false
-	}
-	defer n.unlockMarker()
 	if n.sibling().isRed() {
 		s := n.sibling()
 		if n.dir() == left {
@@ -308,8 +323,8 @@ func (t *RBTree[K, V]) maintainAfterDelete(n *RBTreeNode[K, V]) bool {
 		n.sibling().right.isBlack() &&
 		n.parent.c == black {
 		n.sibling().c = red
-		n.unlockArea()
-		t.maintainAfterDelete(n.parent)
+		n.parent.getMarker(m,true)
+		t.maintainAfterDelete(n.parent, l, m)
 		return true
 	}
 	if n.dir() == left && n.sibling().left.isRed() && n.sibling().right.isBlack() ||
@@ -339,11 +354,10 @@ func (n *RBTreeNode[K, V]) lock() bool {
 	if n == nil {
 		return false
 	}
-	ok := n.flag.CompareAndSwap(false, true)
-	if !ok {
+	if ok := n.flag.CompareAndSwap(false, true); !ok {
 		return false
 	}
-	if n.hpflag.Load() > 1 {
+	if n.hpflag.Load() > 0 {
 		n.flag.Swap(false)
 		return false
 	}
@@ -355,122 +369,146 @@ func (n *RBTreeNode[K, V]) islock() bool {
 }
 
 func (n *RBTreeNode[K, V]) unlock() bool {
-	return n.flag.CompareAndSwap(true, false)
-}
-
-func (n *RBTreeNode[K, V]) unlockArea() {
-	p := &n.l
-	for p != nil && p.Val != nil {
-		p.Val.flag.CompareAndSwap(true, false)
-		p = p.Next
+	if n != nil {
+		return n.flag.CompareAndSwap(true, false)
 	}
-	n.l = localArea[K,V]{}
+	return true
 }
 
-func (n *RBTreeNode[K, V]) lockDelete() bool {
-	n.l =  localArea[K,V]{}
-	d := &n.l
-	if ok := n.lock(); !ok {
+func (l *LocalArea[K, V]) unlockArea() {
+	for i := range *l {
+		(*l)[i].unlock()
+	}
+	(*l) = (*l)[:0]
+}
+
+func (n *RBTreeNode[K, V]) lockDelete(l *LocalArea[K, V]) bool {
+	if ok := n.islock(); ok {
 		return false
 	}
-	d.Val = n
-	d.Next = new(localArea[K,V])
-	d = d.Next
+	(*l) = append((*l), n)
 	if n.parent != nil {
-		if ok := n.parent.lock(); !ok {
-			n.unlockArea()
+		if ok := n.parent.islock(); ok {
+			l.unlockArea()
 			return false
 		}
-		d.Val = n.parent
-		d.Next = new(localArea[K,V])
-		d = d.Next
-
-		if n.uncle() != nil {
-			if ok := n.uncle().lock(); !ok {
-				n.unlockArea()
+		(*l) = append((*l), n.parent)
+		if n.sibling() != nil {
+			if ok := n.sibling().lock(); !ok {
+				l.unlockArea()
 				return false
 			}
-			d.Val = n.uncle()
-			d.Next = new(localArea[K,V])
-			d = d.Next
-			if n.uncle().left != nil {
-				if ok := n.uncle().left.lock(); !ok {
-					n.unlockArea()
+			(*l) = append((*l), n.sibling())
+			if n.sibling().left != nil {
+				if ok := n.sibling().left.lock(); !ok {
+					l.unlockArea()
 					return false
 				}
-				d.Val = n.uncle().left
-				d.Next = new(localArea[K,V])
-				d = d.Next
+				(*l) = append((*l), n.sibling().left)
 			}
-			if n.uncle().right != nil {
-				if ok := n.uncle().right.lock(); !ok {
-					n.unlockArea()
+			if n.sibling().right != nil {
+				if ok := n.sibling().right.lock(); !ok {
+					l.unlockArea()
 					return false
 				}
-				d.Val = n.uncle().right
-				d.Next = new(localArea[K,V])
-				d = d.Next
+				(*l) = append((*l), n.sibling().right)
 			}
 		}
 	}
 	return true
 }
 
-func (n *RBTreeNode[K, V]) lockInsert() bool {
-	n.l = localArea[K,V]{}
-	d := &n.l
-	if ok := n.lock(); !ok {
+func (n *RBTreeNode[K, V]) upInsertLock(l *LocalArea[K, V]) bool {
+	if !n.islock() || n.isMark() {
+		l.unlockArea()
 		return false
 	}
-	d.Val = n
-	d.Next = new(localArea[K,V])
-	d = d.Next
 	if n.parent != nil {
-		if ok := n.parent.lock(); !ok {
-			n.unlockArea()
+		if !n.parent.islock() || n.parent.isMark() {
+			l.unlockArea()
 			return false
 		}
-		d.Val = n.parent
-		d.Next = new(localArea[K,V])
-		d = d.Next
+		if n.sibling() != nil {
+			if !n.sibling().islock() || n.sibling().isMark(){
+				l.unlockArea()
+				return false
+			}
+		}
 		if n.parent.parent != nil {
-			if ok := n.parent.parent.lock(); !ok {
-				n.unlockArea()
+			if ok := n.parent.parent.lock(); !ok || n.parent.parent.isMark() {
+				l.unlockArea()
 				return false
 			}
-			d.Val = n.parent.parent
-			d.Next = new(localArea[K,V])
-			d = d.Next
+			(*l) = append((*l), n.parent.parent)
 		}
 		if n.uncle() != nil {
-			if ok := n.uncle().lock(); !ok {
-				n.unlockArea()
+			if ok := n.uncle().lock(); !ok || n.uncle().isMark(){
+				l.unlockArea()
 				return false
 			}
-			d.Val = n.uncle()
-			d.Next = new(localArea[K,V])
-			d = d.Next
+			(*l) = append((*l), n.uncle())
 		}
 	}
 	return true
 }
 
-func (t *RBTree[K, V]) insert(n *RBTreeNode[K, V], key K, value V) (isNew bool, succeed bool) {
+func (n *RBTreeNode[K, V]) isMark() bool {
+	return n.marker.Load()
+}
+
+func (n *RBTreeNode[K, V]) lockInsert(l *LocalArea[K, V]) bool {
+	if !n.islock() || n.isMark() {
+		return false
+	}
+	(*l) = append((*l), n)
+	if n.parent != nil {
+		if ok := n.parent.lock(); !ok || n.parent.isMark(){
+			l.unlockArea()
+			return false
+		}
+		(*l) = append((*l), n.parent)
+		if n.sibling() != nil {
+			if ok := n.sibling().lock(); !ok || n.sibling().isMark() {
+				l.unlockArea()
+				return false
+			}
+			(*l) = append((*l), n.sibling())
+		}
+		if n.parent.parent != nil {
+			if ok := n.parent.parent.lock(); !ok || n.parent.parent.isMark() {
+				l.unlockArea()
+				return false
+			}
+			(*l) = append((*l), n.parent.parent)
+		}
+		if n.uncle() != nil {
+			if ok := n.uncle().lock(); !ok || n.uncle().isMark() {
+				l.unlockArea()
+				return false
+			}
+			(*l) = append((*l), n.uncle())
+		}
+	}
+	return true
+}
+
+func (t *RBTree[K, V]) insert(n *RBTreeNode[K, V], key K, value V, l *LocalArea[K, V]) (isNew bool, succeed bool) {
 	if ok := n.lock(); !ok {
 		return false, false
 	}
 	defer n.unlock()
+	if n.parent != nil {
+		n.parent.unlock()
+	}
 	if n.key == key {
 		n.value = value
 		return false, true
 	}
 	if n.key > key && n.left != nil {
-		n.unlock()
-		return t.insert(n.left, key, value)
+		return t.insert(n.left, key, value, l)
 	}
 	if n.key < key && n.right != nil {
-		n.unlock()
-		return t.insert(n.right, key, value)
+		return t.insert(n.right, key, value, l)
 	}
 	insert := &RBTreeNode[K, V]{
 		c:      red,
@@ -484,11 +522,23 @@ func (t *RBTree[K, V]) insert(n *RBTreeNode[K, V], key K, value V) (isNew bool, 
 		n.right = insert
 	}
 	if n.isRed() {
+		insert.lock()
+		defer insert.unlock()
 		n.unlock()
-		if !t.maintainAfterInsert(insert){
+		if insert.lockInsert(l) {
+			defer l.unlockArea()
+			if !t.maintainAfterInsert(insert, l) {
+				if n.key > key {
+					n.left = nil
+				} else {
+					n.right = nil
+				}
+				return true, false
+			}
+		} else {
 			if n.key > key {
 				n.left = nil
-			}else{
+			} else {
 				n.right = nil
 			}
 			return true, false
@@ -509,8 +559,10 @@ func (t *RBTree[K, V]) Insert(key K, value V) {
 	}
 	var new bool
 	var ok bool
-	for new, ok = t.insert(t.root, key, value); !ok; new, ok = t.insert(t.root, key, value) {
-		time.Sleep(100 * time.Nanosecond)
+	l := make(LocalArea[K, V], 0)
+	for new, ok = t.insert(t.root, key, value, &l); !ok; new, ok = t.insert(t.root, key, value, &l) {
+		time.Sleep(100 * time.Microsecond)
+		l = l[:0]
 	}
 	if new {
 		t.count++
@@ -522,7 +574,7 @@ func (n *RBTreeNode[K, V]) swap(d *RBTreeNode[K, V]) {
 	d.value, n.value = n.value, d.value
 }
 
-func (t *RBTree[K, V]) delete(n *RBTreeNode[K, V], key K) (*V, bool) {
+func (t *RBTree[K, V]) delete(n *RBTreeNode[K, V], key K, l, m *LocalArea[K, V]) (*V, bool) {
 	if n == nil {
 		return nil, true
 	}
@@ -530,9 +582,20 @@ func (t *RBTree[K, V]) delete(n *RBTreeNode[K, V], key K) (*V, bool) {
 		return nil, false
 	}
 	defer n.unlock()
+	if n.parent != nil {
+		if n.parent.parent != nil {
+			n.parent.parent.unlock()
+		}
+	}
 	switch cmp.Compare(key, n.key) {
 	case 0:
 		{
+			if !n.lockDelete(l){
+				return nil,false
+			}
+			defer l.unlockArea()
+			n.getMarker(m,false)
+			defer n.unlockMarker(m)
 			v := n.value
 			// case 1
 			if n.left != nil && n.right != nil {
@@ -551,8 +614,7 @@ func (t *RBTree[K, V]) delete(n *RBTreeNode[K, V], key K) (*V, bool) {
 			// case 2: if is leaf node
 			if n.left == nil && n.right == nil {
 				if n.c == black {
-					n.unlock()
-					t.maintainAfterDelete(n)
+					t.maintainAfterDelete(n, l, m)
 				}
 				if n.dir() == left {
 					n.parent.left = nil
@@ -583,11 +645,9 @@ func (t *RBTree[K, V]) delete(n *RBTreeNode[K, V], key K) (*V, bool) {
 			return &v, true
 		}
 	case -1:
-		n.unlock()
-		return t.delete(n.left, key)
+		return t.delete(n.left, key, l, m)
 	case 1:
-		n.unlock()
-		return t.delete(n.right, key)
+		return t.delete(n.right, key, l, m)
 	}
 	return nil, true
 }
@@ -602,9 +662,13 @@ func (t *RBTree[K, V]) Delete(key K) *V {
 	}
 	var b *V
 	var ok bool
-	for b, ok = t.delete(t.root, key); !ok; b, ok = t.root.get(key) {
-		time.Sleep(10 * time.Nanosecond)
-	}
+	l := make(LocalArea[K, V], 0)
+	m := make(LocalArea[K, V], 0)
+		for b, ok = t.delete(t.root, key, &l, &m); !ok; b, ok = t.delete(t.root, key, &l, &m) {
+			time.Sleep((50+time.Duration(rand.Int64N(40)))* time.Microsecond)
+			l = l[:0]
+			m = m[:0]
+		}
 	return b
 }
 
@@ -612,13 +676,13 @@ func (t *RBTree[K, V]) Get(key K) *V {
 	var b *V
 	var ok bool
 	for b, ok = t.root.get(key); !ok; b, ok = t.root.get(key) {
-		time.Sleep(10 * time.Nanosecond)
+		time.Sleep(10 * time.Microsecond)
 	}
 	return b
 }
 
 func (t *RBTree[K, V]) check(n *RBTreeNode[K, V], bc int) (int, error) {
-	if n == nil {
+	if n == nil || n.flag.Load() {
 		return bc, nil
 	}
 	if n.isRed() {
@@ -674,12 +738,12 @@ func (n *RBTreeNode[K, V]) String() string {
 	if n.right != nil {
 		right = fmt.Sprintf("%v", n.right.key)
 	}
-	parent := "nil"
-	if n.parent != nil {
-		parent = fmt.Sprintf("%v", n.parent.key)
-	}
-	return fmt.Sprintf("[key: %v, value: %v, color: %s, parent: %s, left: %s, right: %s]",
-		n.key, n.value, n.c, parent, left, right)
+	// parent := "nil"
+	// if n.parent != nil {
+	// 	parent = fmt.Sprintf("%v", n.parent.key)
+	// }
+	return fmt.Sprintf("[key: %v, color: %s,left: %s, right: %s, flag: %v, mark: %v]",
+		n.key, n.c, left, right, n.flag.Load(), n.marker.Load())
 }
 
 func (t *RBTree[K, V]) String() string {
